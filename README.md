@@ -14,55 +14,53 @@ The system is exposed through a FastAPI REST API and includes:
 - An interactive evaluation dashboard
 - Custom question testing through retrieval and full RAG generation
 
----
-
 ## Architecture
 
 The RAG pipeline follows this flow:
 
-    User Question
-          |
-          v
-    FastAPI REST API
-          |
-    +-----+-----+
-    |           |
-    v           v
-/retrieve     /query
-    |           |
-    +-----+-----+
-          |
-          v
-    Hybrid Retrieval
-      /         \
-     /           \
-    v             v
-BM25 Search   Vector Search
-    |             |
-    +------+------+
-           |
-           v
- Reciprocal Rank Fusion
-           |
-           v
-       Reranker
-           |
-           v
-   Top Relevant Chunks
-      /           \
-     /             \
-    v               v
-Return Chunks   LLM Context
- (/retrieve)        |
-                    v
-               OpenAI API
-                    |
-                    v
-             Answer + Sources
+```text
+                         User Question
+                              |
+                              v
+                       FastAPI REST API
+                              |
+                    +---------+---------+
+                    |                   |
+                    v                   v
+                /retrieve             /query
+                    |                   |
+                    +---------+---------+
+                              |
+                              v
+                    Hybrid Retrieval
+                     /             \
+                    /               \
+                   v                 v
+              BM25 Search      Vector Search
+                   |                 |
+                   +-------+---------+
+                           |
+                           v
+                  Reciprocal Rank Fusion
+                           |
+                           v
+                       Reranker
+                           |
+                           v
+                  Top Relevant Chunks
+                     /             \
+                    /               \
+                   v                 v
+              Return Chunks       LLM Context
+              (/retrieve)              |
+                                       v
+                                  OpenAI API
+                                       |
+                                       v
+                                Answer + Sources
+```
 
 The retrieval pipeline is separated from LLM generation so that retrieval quality can be tested independently.
-
----
 
 ## Project Structure
 
