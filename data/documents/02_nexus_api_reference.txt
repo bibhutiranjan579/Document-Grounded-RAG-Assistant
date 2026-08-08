@@ -1,0 +1,207 @@
+NEXUS AI PLATFORM — REST API REFERENCE
+Version: 3.2.1
+Base URL (Cloud): https://api.nexus.meridian-labs.io/v3
+Base URL (Self-hosted): https://<your-domain>/api/v3
+
+All requests must include:
+  Authorization: Bearer <token>
+  Content-Type: application/json
+
+Errors follow RFC 7807 (Problem Details). HTTP 429 responses include a
+Retry-After header in seconds.
+
+=============================================================================
+PIPELINES
+=============================================================================
+
+POST /workspaces/{workspace_id}/pipelines
+  Create a new pipeline definition.
+  Body:
+    {
+      "name": string,          // unique within workspace, max 64 chars
+      "description": string,   // optional
+      "spec": {                // inline YAML parsed as JSON, or base64 YAML
+        "steps": [...]
+      },
+      "schedule": string       // cron expression, optional
+    }
+  Returns: Pipeline object (id, name, created_at, status)
+  Errors: 400 (invalid spec), 409 (name conflict)
+
+GET /workspaces/{workspace_id}/pipelines
+  List all pipelines. Supports ?status=active|archived&limit=50&cursor=...
+
+GET /workspaces/{workspace_id}/pipelines/{pipeline_id}
+  Get a single pipeline definition.
+
+PATCH /workspaces/{workspace_id}/pipelines/{pipeline_id}
+  Update pipeline name, description, or spec (creates a new version).
+  Immutable fields: id, workspace_id, created_at.
+
+DELETE /workspaces/{workspace_id}/pipelines/{pipeline_id}
+  Archive the pipeline (soft delete). Runs are retained.
+
+POST /workspaces/{workspace_id}/pipelines/{pipeline_id}/runs
+  Trigger a pipeline run.
+  Body:
+    {
+      "parameters": { ... },   // override pipeline-level defaults
+      "compute_profile": "cpu-small | cpu-large | gpu-v100 | gpu-a100"
+    }
+  Returns: Run object (id, pipeline_id, status, started_at)
+  Notes: runs are asynchronous; poll GET .../runs/{run_id} for status.
+
+GET /workspaces/{workspace_id}/pipelines/{pipeline_id}/runs/{run_id}
+  Get run status. Status values:
+    pending | queued | running | succeeded | failed | cancelled
+
+GET /workspaces/{workspace_id}/pipelines/{pipeline_id}/runs/{run_id}/logs
+  Stream step logs. Returns newline-delimited JSON log events.
+  Supports ?step_name= to filter to a single step.
+
+POST /workspaces/{workspace_id}/pipelines/{pipeline_id}/runs/{run_id}/cancel
+  Cancel a queued or running run.
+
+=============================================================================
+MODELS (NexusExperiments Registry)
+=============================================================================
+
+GET /workspaces/{workspace_id}/models
+  List registered models. Supports ?stage=staging|production|archived
+
+POST /workspaces/{workspace_id}/models
+  Register a new model.
+  Body:
+    {
+      "name": string,
+      "description": string,
+      "tags": { key: value }
+    }
+
+POST /workspaces/{workspace_id}/models/{model_name}/versions
+  Create a new version under a registered model.
+  Body:
+    {
+      "run_id": string,        // the experiment run that produced this model
+      "artifact_path": string, // path within run artifacts, e.g. "model/"
+      "description": string
+    }
+  Returns: ModelVersion (name, version, stage="staging", artifact_uri)
+
+PATCH /workspaces/{workspace_id}/models/{model_name}/versions/{version}
+  Transition model version stage.
+  Body: { "stage": "staging | production | archived" }
+  Notes:
+    - Only one version per model can be in "production" at a time.
+    - Transitioning to "production" automatically archives the previous
+      production version.
+    - Archived versions cannot be transitioned; create a new version.
+
+GET /workspaces/{workspace_id}/models/{model_name}/versions/{version}/artifacts
+  List artifact files for a model version.
+
+=============================================================================
+SERVING (NexusServe)
+=============================================================================
+
+POST /workspaces/{workspace_id}/deployments
+  Deploy a model version to NexusServe.
+  Body:
+    {
+      "model_name": string,
+      "model_version": int,
+      "deployment_name": string,
+      "compute_profile": "cpu-small | cpu-large | gpu-v100 | gpu-a100",
+      "min_replicas": int,      // default 1
+      "max_replicas": int,      // default 5
+      "canary_weight": int,     // 0–100, traffic % to this deployment; default 100
+      "shadow_mode": bool       // if true, receives copy of traffic but response discarded
+    }
+  Returns: Deployment object (id, endpoint_url, status)
+  Notes: Endpoint is live once status = "ready". Typically < 3 minutes.
+
+GET /workspaces/{workspace_id}/deployments/{deployment_id}
+  Get deployment status and endpoint URL.
+
+PATCH /workspaces/{workspace_id}/deployments/{deployment_id}
+  Update replicas, canary_weight, or shadow_mode. Live changes; no downtime.
+
+DELETE /workspaces/{workspace_id}/deployments/{deployment_id}
+  Tear down the deployment. In-flight requests are drained (30-second grace).
+
+POST /workspaces/{workspace_id}/deployments/{deployment_id}/predict
+  Send an inference request to the deployed model.
+  Body: model-defined schema (arbitrary JSON)
+  Returns: model-defined response (arbitrary JSON)
+  Notes:
+    - Max request payload: 10 MB
+    - Timeout: 30 seconds (configurable up to 300 s via deployment setting)
+    - Shadow mode deployments return HTTP 202 with empty body (response discarded)
+
+=============================================================================
+MONITORING (NexusMonitor)
+=============================================================================
+
+POST /workspaces/{workspace_id}/monitors
+  Create a drift monitor for a deployed model.
+  Body:
+    {
+      "deployment_id": string,
+      "reference_dataset": string,  // NexusData dataset ID used as baseline
+      "metrics": ["psi", "kl_divergence", "prediction_drift"],
+      "schedule": "hourly | daily | weekly",
+      "alert_channel": {
+        "type": "slack | pagerduty | webhook",
+        "target": string           // webhook URL, PD routing key, Slack channel ID
+      },
+      "thresholds": {
+        "psi": 0.2,                // default; alert if PSI > threshold
+        "prediction_drift": 0.15
+      }
+    }
+
+GET /workspaces/{workspace_id}/monitors/{monitor_id}/reports
+  List drift reports. Each report includes per-feature PSI scores, overall
+  drift score, and triggered alert history.
+  Supports ?from=ISO8601&to=ISO8601&limit=100
+
+=============================================================================
+RATE LIMITS
+=============================================================================
+
+All API endpoints share a per-workspace rate limit:
+
+  Starter plan    :  120 requests/minute,   500 requests/hour
+  Growth plan     :  600 requests/minute,  5,000 requests/hour
+  Scale plan      : 2,400 requests/minute, 20,000 requests/hour
+  Enterprise      : Custom; negotiated in contract
+
+Rate limit headers returned on every response:
+  X-RateLimit-Limit      : requests allowed in current window
+  X-RateLimit-Remaining  : requests remaining in current window
+  X-RateLimit-Reset      : UNIX timestamp when window resets
+
+Burst allowance: up to 2× the per-minute limit for a 5-second burst window.
+CI/CD use cases with high burst needs should use the async batch endpoints.
+
+=============================================================================
+WEBHOOKS
+=============================================================================
+
+Nexus can POST event notifications to any HTTPS endpoint you register.
+
+POST /workspaces/{workspace_id}/webhooks
+  Body:
+    {
+      "url": string,
+      "events": ["run.succeeded", "run.failed", "deployment.ready",
+                 "model.stage_transition", "monitor.alert_triggered"],
+      "secret": string    // used to sign payload with HMAC-SHA256
+    }
+
+Webhook payloads are signed with the HMAC-SHA256 of the raw body using the
+provided secret. The signature is in the X-Nexus-Signature header:
+  X-Nexus-Signature: sha256=<hex_digest>
+
+Nexus retries failed webhook deliveries with exponential backoff (1s, 2s, 4s,
+8s, 16s). After 5 failures the webhook is automatically disabled.

@@ -1,0 +1,179 @@
+NEXUS AI PLATFORM — SECURITY & COMPLIANCE WHITE PAPER
+Version 2.1 | March 2025
+Meridian Labs Security Team
+
+=============================================================================
+EXECUTIVE SUMMARY
+=============================================================================
+
+This document describes the security controls, compliance certifications,
+and data handling practices of the Nexus AI Platform. It is intended for
+security teams, compliance officers, and enterprise procurement processes.
+
+Nexus Cloud is SOC 2 Type II certified, GDPR compliant, HIPAA eligible
+(with BAA, Growth plan and above), and ISO 27001 certified as of v3.0.
+
+=============================================================================
+DATA CLASSIFICATION & HANDLING
+=============================================================================
+
+Nexus classifies data into four tiers:
+
+  Tier 1 — Control Metadata (stored in Meridian Labs infrastructure):
+    - Pipeline definitions, run status, metric scalars, model registry entries
+    - User account information, RBAC assignments, audit logs
+    - Encrypted at rest with AES-256-GCM; keys managed by AWS KMS
+    - Backed up every 5 minutes (WAL shipping); 30-day retention
+    - Accessed by Meridian Labs SREs only under break-glass procedures
+      with audit trail
+
+  Tier 2 — Customer Compute Data (stays in customer's cloud account):
+    - Training datasets, model weights, inference payloads, step artifacts
+    - NEVER transmitted to Meridian Labs infrastructure
+    - Durability and encryption managed by customer's object store settings
+    - Nexus recommends: S3 SSE-KMS with customer-managed keys
+
+  Tier 3 — Logs & Telemetry (optional; configurable forwarding):
+    - Step execution logs, latency metrics, drift scores
+    - By default, aggregated metrics (not raw data) forwarded to control plane
+    - Raw log forwarding can be disabled per workspace in Security Settings
+    - PII fields auto-redacted via regex pipeline before transmission
+
+  Tier 4 — Audit Logs (immutable; stored in Meridian Labs infrastructure):
+    - All admin API actions with actor, timestamp, IP, action, resource
+    - Retention: 1 year (Cloud), configurable 1–7 years (Enterprise)
+    - Accessible to workspace Admins and Platform Admins only
+    - Cannot be deleted by customers; Meridian Labs can delete on legal request
+
+=============================================================================
+ENCRYPTION
+=============================================================================
+
+IN TRANSIT:
+  - All external API traffic: TLS 1.2+ (TLS 1.1 removed in v3.2.0)
+  - Preferred cipher suites: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256
+  - HSTS enforced with 1-year max-age, including subdomains
+  - Internal control-plane microservice traffic: mTLS (Istio service mesh)
+    with 24-hour certificate rotation
+  - Data plane → control plane: mTLS via Data Plane Proxy (see Architecture doc)
+
+AT REST:
+  - Nexus Cloud: AES-256-GCM, AWS KMS managed keys, automatic key rotation
+    annually
+  - Nexus Enterprise with BYOK: customer provides KMS key ARN/resource ID;
+    Nexus never sees the raw key material
+  - Database (Aurora PostgreSQL): AWS RDS encryption enabled; storage-level
+    AES-256
+  - Kafka message payloads: encrypted at producer with envelope encryption
+    before hitting the broker
+
+=============================================================================
+AUTHENTICATION & SESSION MANAGEMENT
+=============================================================================
+
+User Authentication:
+  - OAuth 2.0 / OIDC. Password-based login available but not recommended.
+  - MFA: TOTP and WebAuthn (hardware key) supported. Admins can enforce
+    MFA policy workspace-wide.
+  - SSO: Okta, Azure AD, Google Workspace, any SAML 2.0 IdP.
+    JIT user provisioning from SAML assertions.
+  - Session tokens: opaque JWTs, 8-hour expiry, rotated on activity.
+    Refresh tokens: 30-day expiry, single-use (rotation on use).
+
+API Keys:
+  - 256-bit random tokens generated with CSPRNG.
+  - Stored as bcrypt hashes (cost factor 12); raw value shown only once at creation.
+  - Default TTL: 90 days (configurable at creation: 1–365 days).
+  - Enterprise installs can set no-expiry with explicit compliance acknowledgement.
+  - Scoped to a single workspace; cannot be cross-workspace.
+  - Key usage logged; anomaly detection alerts on unusual usage patterns
+    (volume spike, new IP, off-hours usage).
+
+=============================================================================
+NETWORK SECURITY
+=============================================================================
+
+Nexus Cloud API:
+  - Public endpoints behind AWS WAF + Shield Standard.
+  - WAF rules: OWASP Top 10 managed rule set, rate limiting, geo-blocking
+    (configurable per workspace).
+  - DDoS protection: Shield Standard (L3/L4); Advanced available on request.
+
+Enterprise / BYOC Data Plane:
+  - Data Plane Proxy uses outbound-only connections (no inbound ports).
+  - Required egress: TCP 443 to api.nexus.meridian-labs.io.
+  - All other inter-pod traffic controlled by Kubernetes NetworkPolicy
+    (deny-all ingress by default; allow-list per component).
+  - Optionally, customers can route data-plane-to-control-plane traffic
+    via AWS PrivateLink (avoids public internet entirely). Contact support.
+
+=============================================================================
+VULNERABILITY MANAGEMENT
+=============================================================================
+
+  - Container images built from Google distroless base images.
+  - Every image scanned with Trivy on each release; Critical CVEs block
+    the release pipeline; High CVEs require sign-off from Security Lead.
+  - Dependencies tracked via Dependabot; security PRs auto-merged for
+    patch-level upgrades.
+  - Annual penetration testing by external firm (most recent: January 2025).
+    Summary report available to Enterprise customers under NDA.
+  - Bug bounty program via HackerOne (private program; invite on request
+    for qualifying researchers).
+  - CVE response SLA:
+      Critical (CVSS ≥ 9.0):   patch released within 24 hours
+      High (CVSS 7.0–8.9):     patch released within 7 days
+      Medium/Low:               included in next scheduled release
+
+=============================================================================
+COMPLIANCE CERTIFICATIONS
+=============================================================================
+
+  SOC 2 Type II:
+    - Scope: Security, Availability, Confidentiality trust service criteria
+    - Audit period: Jan 1 – Dec 31, 2024
+    - Auditor: Schellman & Company
+    - Report available under NDA to current and prospective Enterprise customers
+
+  ISO 27001:
+    - Certification body: BSI Group
+    - Initial certification: October 2024
+    - Certificate valid through: October 2027 (annual surveillance audits)
+
+  GDPR:
+    - Meridian Labs acts as a Data Processor for customer personal data.
+    - Data Processing Agreement (DPA) available on request; auto-signed for
+      EU customers.
+    - EU data residency: workspaces in eu-west-1 region; data does not leave
+      the EU except as explicitly configured by the customer.
+    - Right to erasure: customer data deleted within 30 days of workspace closure.
+
+  HIPAA:
+    - Eligible for PHI workloads on Growth plan and above.
+    - Business Associate Agreement (BAA) available; contact sales.
+    - Customers are responsible for: encryption of PHI in their artifact store
+      (Tier 2 data), appropriate minimum necessary access controls.
+    - Nexus does not access or process PHI in Tier 1 metadata.
+
+=============================================================================
+INCIDENT RESPONSE
+=============================================================================
+
+Meridian Labs maintains a 24/7 on-call rotation for security incidents.
+
+Severity classification:
+  P0 — Active breach or data exfiltration, service fully down
+  P1 — Potential breach, significant service degradation
+  P2 — Security misconfiguration, limited customer impact
+  P3 — Non-urgent security hygiene, no customer impact
+
+Customer notification SLA:
+  P0: 1 hour (phone + email to primary security contact)
+  P1: 4 hours (email to primary security contact)
+  P2/P3: next business day (email summary)
+
+Post-incident: Root cause analysis published to status page within 5 days
+for P0/P1 incidents. Enterprise customers receive a detailed PIR document.
+
+Contact: security@meridian-labs.io
+PGP key fingerprint: 4A3B 9C12 FE78 D1A0 3344 ... (full key on security portal)

@@ -1,0 +1,264 @@
+NEXUS AI PLATFORM — PYTHON SDK GUIDE
+Version 3.2 | nexus-sdk >= 3.2.0
+Install: pip install nexus-sdk>=3.2.0
+
+=============================================================================
+QUICKSTART
+=============================================================================
+
+from nexus import NexusClient
+
+client = NexusClient(
+    workspace_id="ws-abc123",
+    api_key="nxk_...",           # or set env var NEXUS_API_KEY
+    base_url="https://api.nexus.meridian-labs.io/v3"   # optional override
+)
+
+# List pipelines
+for pipeline in client.pipelines.list():
+    print(pipeline.name, pipeline.status)
+
+=============================================================================
+PIPELINES
+=============================================================================
+
+Creating and submitting a run:
+
+from nexus.pipeline import Pipeline, Step
+
+pipeline = Pipeline(name="train-and-eval")
+pipeline.add_step(Step(
+    name="load-data",
+    type="DataLoader",
+    source="s3://my-bucket/datasets/train.parquet",
+    compute_profile="cpu-small"
+))
+pipeline.add_step(Step(
+    name="train",
+    type="Trainer",
+    image="my-registry/trainer:latest",
+    depends_on=["load-data"],
+    compute_profile="gpu-v100",
+    env={"EPOCHS": "50", "LEARNING_RATE": "1e-4"},
+    inputs={"dataset": "load-data.output.dataset"},
+    max_retries=2
+))
+pipeline.add_step(Step(
+    name="evaluate",
+    type="Evaluator",
+    image="my-registry/evaluator:latest",
+    depends_on=["train"],
+    inputs={"model": "train.output.model", "dataset": "load-data.output.dataset"}
+))
+
+# Create or update in the workspace
+created = client.pipelines.create(pipeline)
+
+# Trigger a run
+run = client.pipelines.run(
+    pipeline_id=created.id,
+    parameters={"EPOCHS": "100"},      # override step env vars
+    compute_profile="gpu-a100"         # override all steps' profile
+)
+
+# Poll for completion
+import time
+while run.status not in ("succeeded", "failed", "cancelled"):
+    time.sleep(10)
+    run = client.runs.get(pipeline_id=created.id, run_id=run.id)
+
+print(f"Run finished: {run.status}")
+
+=============================================================================
+EXPERIMENTS (METRICS LOGGING)
+=============================================================================
+
+Inside a step container, use the NexusExperiments client to log metrics.
+The NEXUS_EXPERIMENT_ID env var is automatically injected by the pipeline
+executor for Evaluator-type steps.
+
+from nexus.experiments import log_metric, log_param, log_artifact
+
+# Log hyperparameters
+log_param("learning_rate", 1e-4)
+log_param("batch_size", 32)
+
+# Log metrics (can be called multiple times during training to build a curve)
+for epoch in range(num_epochs):
+    train_loss = ...
+    val_accuracy = ...
+    log_metric("train_loss", train_loss, step=epoch)
+    log_metric("val_accuracy", val_accuracy, step=epoch)
+
+# Log a file artifact (model weights, confusion matrix, etc.)
+log_artifact("confusion_matrix.png")
+
+The SDK automatically picks up NEXUS_EXPERIMENT_ID and NEXUS_API_KEY from
+the environment. If running outside a Nexus pipeline, set them manually:
+
+import os
+os.environ["NEXUS_EXPERIMENT_ID"] = "exp-xyz789"
+os.environ["NEXUS_API_KEY"] = "nxk_..."
+
+MLflow compatibility:
+  The NexusExperiments server implements the MLflow REST v2.0 API.
+  If you prefer, you can use the MLflow Python client directly:
+
+  import mlflow
+  mlflow.set_tracking_uri("https://api.nexus.meridian-labs.io/v3/mlflow")
+  mlflow.set_experiment("my-experiment")
+
+  Requires mlflow >= 2.3.0. Set MLFLOW_TRACKING_TOKEN = your Nexus API key.
+
+=============================================================================
+MODEL REGISTRY
+=============================================================================
+
+# Register a new model
+model = client.models.create(
+    name="fraud-detector",
+    description="XGBoost fraud detection model, v2 features",
+    tags={"team": "risk", "domain": "fraud"}
+)
+
+# Create a version linked to a run
+version = client.models.create_version(
+    model_name="fraud-detector",
+    run_id="run-abc123",
+    artifact_path="model/",
+    description="Trained on Q1 2025 data"
+)
+print(f"Version {version.version} created, stage: {version.stage}")  # staging
+
+# Promote to production
+client.models.transition_stage(
+    model_name="fraud-detector",
+    version=version.version,
+    stage="production"       # automatically archives previous production version
+)
+
+=============================================================================
+SERVING
+=============================================================================
+
+# Deploy a model version
+deployment = client.deployments.create(
+    model_name="fraud-detector",
+    model_version=3,
+    deployment_name="fraud-detector-prod",
+    compute_profile="cpu-large",
+    min_replicas=2,
+    max_replicas=10,
+    canary_weight=100
+)
+
+# Wait for it to be ready
+import time
+while deployment.status != "ready":
+    time.sleep(15)
+    deployment = client.deployments.get(deployment.id)
+
+print(f"Endpoint: {deployment.endpoint_url}")
+
+# Send an inference request
+result = client.deployments.predict(
+    deployment_id=deployment.id,
+    payload={"transaction_amount": 4200.0, "merchant_category": "travel"}
+)
+print(result)   # {"fraud_probability": 0.03, "label": "legitimate"}
+
+# Canary rollout: shift 20% of traffic to a new version
+client.deployments.update(
+    deployment_id="dep-old123",
+    canary_weight=80
+)
+new_dep = client.deployments.create(
+    model_name="fraud-detector",
+    model_version=4,
+    deployment_name="fraud-detector-canary",
+    canary_weight=20
+)
+
+=============================================================================
+DATA (NexusData)
+=============================================================================
+
+from nexus.data import Dataset
+
+# Create or load a dataset
+ds = client.data.create_dataset(
+    name="fraud-training-v3",
+    schema={"transaction_amount": "float64", "merchant_category": "string",
+            "is_fraud": "int8"}
+)
+
+# Write a snapshot (Delta Lake transaction)
+ds.write_snapshot(
+    source="s3://my-bucket/fraud-data/2025-q1/",
+    source_format="parquet"
+)
+
+# Read back
+df = ds.read()          # returns Polars DataFrame by default
+# or
+df = ds.read(as_pandas=True)
+
+# Snapshot history
+for snap in ds.snapshots():
+    print(snap.version, snap.created_at, snap.row_count)
+
+# Chunked reading (recommended for large datasets)
+for chunk in ds.read_chunks(batch_size=10_000):
+    process(chunk)
+
+=============================================================================
+ERROR HANDLING
+=============================================================================
+
+The SDK raises typed exceptions for all API errors:
+
+from nexus.exceptions import (
+    NexusAuthError,       # 401/403
+    NexusNotFoundError,   # 404
+    NexusConflictError,   # 409
+    NexusRateLimitError,  # 429 — includes .retry_after (seconds)
+    NexusServerError      # 5xx
+)
+
+try:
+    run = client.pipelines.run(pipeline_id="bad-id")
+except NexusNotFoundError as e:
+    print(f"Pipeline not found: {e.detail}")
+except NexusRateLimitError as e:
+    print(f"Rate limited. Retry after {e.retry_after}s")
+
+For NexusRateLimitError, the SDK includes a built-in retry helper:
+
+from nexus.utils import with_retry
+
+run = with_retry(
+    lambda: client.pipelines.run(pipeline_id="pip-123"),
+    max_attempts=5,
+    backoff_base=2.0   # exponential backoff, starts at 2s
+)
+
+=============================================================================
+CONFIGURATION REFERENCE
+=============================================================================
+
+NexusClient accepts the following constructor arguments (all can also be
+set via environment variables):
+
+  Argument          Env Var               Default
+  ─────────────────────────────────────────────────────────────────────
+  workspace_id      NEXUS_WORKSPACE_ID    required
+  api_key           NEXUS_API_KEY         required
+  base_url          NEXUS_BASE_URL        https://api.nexus.meridian-labs.io/v3
+  timeout           NEXUS_TIMEOUT         30 (seconds)
+  max_retries       NEXUS_MAX_RETRIES     3
+  verify_ssl        NEXUS_VERIFY_SSL      True
+  log_level         NEXUS_LOG_LEVEL       WARNING
+
+Setting log_level="DEBUG" enables request/response logging including
+headers and bodies (redacts Authorization header value).
+Do not enable DEBUG logging in production — sensitive payloads may be logged.

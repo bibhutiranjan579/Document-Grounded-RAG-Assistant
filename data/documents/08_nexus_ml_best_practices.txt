@@ -1,0 +1,209 @@
+NEXUS AI PLATFORM — ML ENGINEERING BEST PRACTICES
+Version 1.4 | Meridian Labs Solutions Engineering
+
+=============================================================================
+OVERVIEW
+=============================================================================
+
+This guide captures patterns that Nexus customers have found most effective
+for building reliable, reproducible ML pipelines. These are not enforced by
+the platform — they are recommendations based on observed failure modes across
+hundreds of production deployments.
+
+=============================================================================
+PIPELINE DESIGN
+=============================================================================
+
+1. MAKE STEPS IDEMPOTENT
+
+Every pipeline step should produce the same output given the same input,
+regardless of how many times it runs. NexusPipeline provides content-addressed
+artifact storage (SHA-256 keyed paths), which means idempotent steps
+automatically deduplicate artifact storage.
+
+Anti-pattern:
+  Writing output to a time-stamped path (model_{datetime.now()}.pkl)
+  means reruns create duplicate artifacts and waste storage.
+
+Better:
+  Use deterministic paths or let the SDK derive the path from input hashes.
+  nexus.artifact.write("model/weights.pt", model_state_dict)
+  # SDK derives storage key from pipeline_id + run_id + step_name + path
+
+2. SEPARATE DATA VALIDATION FROM TRANSFORMATION
+
+Always put a DataLoader step before any Preprocessor. The DataLoader step
+should validate schema (column presence, types, null rates) and fail fast
+with a clear error before any expensive transformation begins.
+
+Use NexusData profiles to assert expected statistics:
+
+from nexus.data import Dataset, SchemaValidator
+
+ds = Dataset.load("fraud-training-v3")
+validator = SchemaValidator(ds)
+validator.assert_column_exists(["transaction_amount", "is_fraud"])
+validator.assert_null_rate("transaction_amount", max_rate=0.01)
+validator.assert_range("transaction_amount", min_val=0.0)
+
+if not validator.valid:
+    raise ValueError(f"Dataset validation failed: {validator.errors}")
+
+3. PIN DEPENDENCY VERSIONS IN STEP IMAGES
+
+Steps that use floating tags (FROM my-trainer:latest) will produce
+different results when the underlying package versions change.
+Pin specific versions in your Dockerfile:
+
+  FROM python:3.11.7-slim
+  RUN pip install scikit-learn==1.4.0 xgboost==2.0.3 nexus-sdk==3.2.0
+
+Store step images in a private registry with immutable tags (SHA-pinned).
+Reference them in pipeline specs by digest: my-registry/trainer@sha256:...
+
+4. LIMIT STEP OUTPUT SIZE
+
+Pipeline step artifacts are limited to 50 GB per step output (platform limit).
+For larger intermediate datasets, use NexusData direct pass-through:
+
+  # Instead of writing a 200 GB feature matrix as a step artifact:
+  from nexus.data import Dataset
+  out_ds = Dataset.create("features-pipeline-run-xyz")
+  out_ds.write_snapshot(feature_df)
+  # Pass the dataset ID as a parameter to the next step
+  nexus.artifact.write("feature_dataset_id.txt", out_ds.id)
+
+=============================================================================
+EXPERIMENT TRACKING
+=============================================================================
+
+5. LOG EVERYTHING, EARLY
+
+Log hyperparameters and dataset metadata at the start of a training run,
+not the end. A run that crashes mid-way should still leave a useful record:
+
+from nexus.experiments import log_param, log_metric, log_artifact, log_tag
+
+# Log immediately at run start
+log_param("model_type", "xgboost")
+log_param("n_estimators", 500)
+log_tag("dataset_version", dataset.snapshot_id)
+log_tag("git_commit", os.environ.get("GIT_COMMIT", "unknown"))
+
+# Log metrics as training progresses (not just the final value)
+for round_num, metrics in enumerate(training_rounds):
+    log_metric("train_auc", metrics.auc, step=round_num)
+    log_metric("val_auc", metrics.val_auc, step=round_num)
+
+6. USE MEANINGFUL MODEL TAGS IN THE REGISTRY
+
+Before transitioning a model version to production, add structured tags
+that capture its provenance:
+
+client.models.create_version(
+    model_name="fraud-detector",
+    run_id=run.id,
+    artifact_path="model/",
+    tags={
+        "dataset_snapshot": dataset.snapshot_id,
+        "training_date": "2025-03-01",
+        "val_auc": "0.962",
+        "champion_challenger": "challenger"    # compared against 'champion' in A/B
+    }
+)
+
+This makes the production promotion decision auditable and reproducible.
+
+=============================================================================
+MODEL DEPLOYMENT
+=============================================================================
+
+7. ALWAYS CANARY BEFORE FULL ROLLOUT
+
+Never deploy a new model version directly to 100% traffic in production.
+Use canary_weight to gradually shift traffic:
+
+  Week 1: canary_weight=5   — smoke test, catch catastrophic failures
+  Week 2: canary_weight=20  — compare key business metrics vs champion
+  Week 3: canary_weight=50  — validate at scale
+  Week 4: canary_weight=100 — full cutover; archive champion
+
+Monitor the canary with NexusMonitor's prediction_drift metric to detect
+distribution shift between champion and challenger predictions before it
+affects business outcomes.
+
+8. USE SHADOW MODE FOR HIGH-RISK MODEL CHANGES
+
+For models where prediction errors have significant consequences (fraud,
+credit scoring, medical), validate with shadow_mode=true before any
+live traffic:
+
+new_dep = client.deployments.create(
+    model_name="fraud-detector",
+    model_version=5,
+    deployment_name="fraud-detector-shadow",
+    shadow_mode=True,          # receives full traffic copy, responses discarded
+    compute_profile="cpu-large"
+)
+
+After 24 hours, compare shadow logs against champion predictions to assess
+agreement rate and flag unexpected divergence before going canary.
+
+9. SET APPROPRIATE RESOURCE PROFILES
+
+Over-provisioning wastes money; under-provisioning causes latency spikes.
+Start with a CPU profile for models that don't use GPU at inference time —
+most sklearn and gradient boosting models fall in this category.
+Reserve GPU profiles for deep learning models (transformers, CNNs).
+
+  Typical p99 latency benchmarks (NexusServe, single-replica):
+    XGBoost (200 trees, 50 features)  : ~5 ms    → cpu-small
+    BERT-base (sequence classification): ~35 ms   → cpu-large or gpu-v100
+    GPT-2 medium (text generation)    : ~180 ms  → gpu-v100
+    LLaMA-2 7B (text generation)      : ~850 ms  → gpu-a100
+
+=============================================================================
+MONITORING
+=============================================================================
+
+10. ALWAYS SET A REFERENCE DATASET AT DEPLOYMENT TIME
+
+The NexusMonitor PSI calculation requires a reference (baseline) dataset.
+The most common mistake is forgetting to set this, then having no historical
+baseline when drift alerts are needed.
+
+Best practice: use the training dataset snapshot as the reference:
+
+monitor = client.monitors.create(
+    deployment_id=deployment.id,
+    reference_dataset=training_ds.latest_snapshot_id,
+    metrics=["psi", "prediction_drift"],
+    schedule="daily",
+    alert_channel={"type": "slack", "target": "#ml-alerts"}
+)
+
+11. TUNE PSI THRESHOLDS PER FEATURE, NOT GLOBALLY
+
+The default global PSI threshold (0.2) is a starting point, not a rule.
+High-cardinality categorical features naturally exhibit larger PSI on
+small samples. Numeric features with known seasonal patterns should
+have higher thresholds during known seasonal shifts.
+
+Reference for PSI interpretation:
+  PSI < 0.1:  insignificant shift — no action needed
+  0.1–0.2:    moderate shift — investigate, but likely benign
+  > 0.2:      significant shift — investigate, consider retraining
+  > 0.5:      severe shift — likely a data pipeline issue upstream
+
+12. LOG PREDICTION GROUND TRUTH BACK TO NEXUSDATA
+
+Drift monitoring is most powerful when ground truth labels are available.
+Design your production system to write ground truth labels back to a
+NexusData dataset, then configure a monitor to compute label distribution
+shift (not just input feature shift):
+
+# In your label collection service (e.g., fraud confirmation pipeline):
+ground_truth_ds = Dataset.load("fraud-ground-truth")
+ground_truth_ds.append({"transaction_id": txn_id, "is_fraud": confirmed_label})
+
+# Then reference this in the monitor for outcome-based drift detection.

@@ -1,0 +1,232 @@
+NEXUS AI PLATFORM — TROUBLESHOOTING GUIDE
+Version 3.2 | Support Reference
+Updated: February 2025
+
+This guide covers the most common failure modes reported by Nexus users,
+their root causes, and recommended remediation steps.
+
+=============================================================================
+SECTION 1: PIPELINE RUNS
+=============================================================================
+
+Issue: Run stays in "pending" indefinitely
+─────────────────────────────────────────
+Symptoms:
+  Run status never transitions from "pending" to "queued" or "running"
+  after more than 10 minutes.
+
+Root causes:
+  A. The Scheduler has a backlog — common during platform-wide high load.
+     Check the Nexus Status Page (status.nexus.meridian-labs.io) for
+     any active incidents.
+  B. The target workspace has exceeded its concurrent run limit.
+     Starter: 3 concurrent runs. Growth: 15. Scale: 50.
+  C. (Enterprise) The Data Plane Proxy is disconnected from the control
+     plane. Check proxy pod health:
+     kubectl get pods -n nexus-system -l app=data-plane-proxy
+
+Remediation:
+  For (B), cancel lower-priority queued runs.
+  For (C), check the proxy logs for TLS handshake errors — the workspace
+  certificate may need rotation: nexus-cli workspace renew-cert.
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: Step fails with OOMKilled
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  Step log ends with "OOMKilled" and run status = "failed".
+  The step's Kubernetes pod exit code is 137.
+
+Root cause:
+  The step container exceeded the memory limit of its assigned compute profile.
+
+  Compute profile memory limits:
+    cpu-small   :  4 GB
+    cpu-large   : 16 GB
+    gpu-v100    : 16 GB (CPU memory) + 16 GB GPU VRAM
+    gpu-a100    : 64 GB (CPU memory) + 40 GB GPU VRAM
+
+Remediation:
+  1. Upgrade the compute profile in the pipeline step config:
+       compute_profile: cpu-large
+  2. If the step is a training step, enable gradient checkpointing to
+     reduce GPU memory footprint.
+  3. For DataLoader steps processing large CSV/Parquet files, switch to
+     chunked reading (NexusData SDK: dataset.read_chunks(batch_size=10000)).
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: Artifact upload fails mid-run with "SignatureExpired"
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  Step log contains: "S3 upload error: SignatureExpired: Request has expired"
+
+Root cause:
+  Pre-signed S3 URLs issued by the control plane have a 1-hour TTL.
+  Steps that take longer than 1 hour to produce output will encounter
+  expired upload URLs.
+
+Remediation:
+  Upgrade the Nexus SDK to ≥ 3.1.4. The updated SDK automatically
+  refreshes upload URLs 10 minutes before expiry. For SDK versions < 3.1.4,
+  split long-running steps into smaller sub-steps.
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: Run succeeds but experiment metrics are not visible in the UI
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  Pipeline run status = "succeeded", but no metrics appear in NexusExperiments.
+
+Root cause:
+  Metrics are logged via the NexusExperiments client inside the step code.
+  The most common causes:
+  A. The step code uses MLflow client < 2.3.0 (schema mismatch, see Limitations
+     section of the Product Overview document).
+  B. The NEXUS_EXPERIMENT_ID environment variable is not set in the step
+     container. This is injected automatically only when the step is declared
+     as an Evaluator type in the pipeline spec.
+  C. Network policy in an Enterprise cluster blocks the step pod from
+     reaching the control-plane metrics ingest endpoint.
+
+Remediation:
+  For (A): pip install --upgrade mlflow>=2.3.0 in the step's container image.
+  For (B): Add `type: Evaluator` to the step definition in the pipeline YAML.
+  For (C): Allow egress from the pipeline namespace to api.nexus.meridian-labs.io:443.
+
+=============================================================================
+SECTION 2: MODEL SERVING (NexusServe)
+=============================================================================
+
+Issue: Deployment stuck in "initializing" status
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  Deployment status never reaches "ready". Stuck at "initializing" for
+  more than 10 minutes.
+
+Root causes:
+  A. Model artifact is too large to pull within the pod startup timeout
+     (default 8 minutes). Artifacts > 5 GB may exceed this.
+  B. The container registry is rate-limited (common with Docker Hub base
+     images during cluster-wide scale events).
+  C. GPU nodes are unavailable — all GPU instances are in use or the
+     cluster autoscaler hasn't provisioned new nodes yet.
+
+Remediation:
+  For (A): Pre-cache the artifact on a persistent volume or switch to
+     a model format with faster load time (e.g., ONNX instead of PyTorch .pt).
+  For (C): Check cluster node status or set min_replicas=0 to use a
+     CPU profile as a fallback while waiting for GPU availability.
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: Inference endpoint returns HTTP 503
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  POST /predict returns 503 Service Unavailable intermittently or consistently.
+
+Root causes:
+  A. All serving pods are overloaded (request queue depth exceeded).
+     Autoscaler may be in its scale-up cooldown window.
+  B. Model threw an unhandled exception on startup (e.g., missing weights
+     file); pod crashed and Kubernetes has entered CrashLoopBackOff.
+  C. The canary deployment has canary_weight=0 (effectively disabled) but
+     is the only deployment for the endpoint.
+
+Remediation:
+  Check pod logs: nexus-cli deployments logs <deployment_id> --tail 200
+  For (A): Temporarily increase min_replicas via PATCH /deployments/{id}.
+  For (B): Inspect the pod startup log for the model loading error.
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: Cached inference returns stale results after model update
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  After updating a deployment to a new model version, some requests still
+  return the previous model's predictions.
+
+Root cause:
+  Response cache (Redis) retains entries keyed by request body. A new model
+  version doesn't automatically invalidate the cache.
+
+Remediation:
+  Flush the deployment's cache: PATCH /deployments/{id} with
+  { "cache_ttl": 0 } to disable caching, wait for in-flight requests to
+  drain (< 1 minute), then re-enable with the new TTL.
+  Alternatively: nexus-cli deployments flush-cache <deployment_id>
+
+=============================================================================
+SECTION 3: AUTHENTICATION & PERMISSIONS
+=============================================================================
+
+Issue: API returns HTTP 403 on a resource the user should have access to
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  A user with "Contributor" role receives 403 Forbidden when attempting
+  to deploy a model or update serving config.
+
+Root cause:
+  Deploying models and modifying serving configs requires the "Operator"
+  role or higher. The "Contributor" role can only create pipelines and
+  submit runs.
+
+Remediation:
+  An Admin must elevate the user's role:
+  Dashboard → Workspace Settings → Members → Edit Role
+  Or via API: PATCH /workspaces/{id}/members/{user_id} { "role": "operator" }
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: API key stops working after 90 days
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  CI/CD pipeline starts returning HTTP 401 after previously working.
+
+Root cause:
+  API keys have a default TTL of 90 days for security compliance. After
+  expiry the key is automatically revoked. This TTL is configurable at
+  key creation time (max 365 days; Enterprise installs can set no-expiry).
+
+Remediation:
+  Generate a new API key in the Dashboard → Developer Settings → API Keys.
+  Set a longer TTL at creation or configure key rotation in your CI/CD
+  secrets manager (recommended over long-lived keys).
+
+=============================================================================
+SECTION 4: MONITORING (NexusMonitor)
+=============================================================================
+
+Issue: Drift monitor reports high PSI but predictions appear correct
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  NexusMonitor fires a PSI drift alert (PSI > 0.2) but manual inspection
+  of model outputs shows predictions are still accurate and business metrics
+  are healthy.
+
+Root cause:
+  PSI measures input feature distribution shift, not output quality.
+  It is common for upstream data pipeline changes (e.g., a new data source,
+  a change in data collection methodology) to shift feature distributions
+  without degrading model accuracy — particularly if the model is robust
+  to that type of shift.
+
+Remediation:
+  1. Inspect the per-feature PSI breakdown in the drift report to identify
+     which features shifted. Correlate with recent data pipeline changes.
+  2. If the shift is expected and benign, update the reference dataset to
+     the new distribution: PATCH /monitors/{id} { "reference_dataset": "<new_id>" }.
+  3. Consider adding prediction distribution metrics alongside PSI for a
+     more holistic drift signal.
+
+─────────────────────────────────────────────────────────────────────────────
+Issue: Monitor report shows no data for the last 24 hours
+─────────────────────────────────────────────────────────────────────────────
+Symptoms:
+  The drift report for a daily monitor has no data points for a day
+  despite the deployment serving traffic.
+
+Root cause:
+  NexusMonitor computes drift by sampling logged inference requests. If the
+  deployment's request logging is disabled (log_requests: false in serving
+  config), NexusMonitor has no data to analyze.
+
+Remediation:
+  Enable request logging: PATCH /deployments/{id} { "log_requests": true }
+  Note: logging increases artifact storage usage. Sampling rate can be
+  set via log_sample_rate (0.0–1.0; default 0.1 = 10% of requests).

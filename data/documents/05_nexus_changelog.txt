@@ -1,0 +1,156 @@
+NEXUS AI PLATFORM — RELEASE CHANGELOG
+Meridian Labs | Engineering Team
+
+=============================================================================
+v3.2.0 — March 12, 2025
+=============================================================================
+
+BREAKING CHANGES
+  - Pipeline YAML spec: `step.resources` block renamed to `step.compute`.
+    Old key is still accepted with a deprecation warning until v4.0.
+  - NexusServe: TLS 1.1 support dropped. All serving endpoints now enforce
+    TLS 1.2 minimum. Update clients that pin to TLS 1.1.
+  - Model Registry API: `POST /model-versions` endpoint removed (deprecated
+    since v2.8). Use `POST /models/{name}/versions` instead.
+
+NEW FEATURES
+  - Shadow Mode Traffic: NexusServe deployments now support shadow_mode=true.
+    Shadow deployments receive a copy of all live traffic but their responses
+    are discarded. Useful for validating new model versions in production
+    traffic conditions without risk. (See API Reference for deployment config.)
+
+  - Dataset Data Profiles: NexusData now automatically computes per-column
+    statistics (null rate, min, max, mean, stddev, cardinality estimate) on
+    every snapshot creation. Profiles are viewable in the Dashboard and via
+    GET /datasets/{id}/snapshots/{snapshot_id}/profile.
+
+  - Webhook Retry Visibility: Webhook delivery attempts and their HTTP
+    response codes are now logged in the Dashboard under
+    Workspace Settings → Webhooks → Delivery History. Helps diagnose
+    intermittent delivery failures.
+
+  - PSI Threshold Per-Feature Override: NexusMonitor now supports per-feature
+    PSI thresholds in the monitor config. Previously a single global threshold
+    applied to all features. Example config:
+    "thresholds": { "psi_global": 0.2, "psi_per_feature": { "income": 0.1 } }
+
+IMPROVEMENTS
+  - NexusServe autoscaler: scale-down cooldown reduced from 10 minutes to 5
+    minutes. This improves cost efficiency for bursty traffic patterns.
+  - Pipeline Executor: step retry logic now distinguishes transient (OOM,
+    node preemption) from permanent failures (exit code 1, bad artifact).
+    Permanent failures no longer consume retry budget unnecessarily.
+  - Dashboard: experiment metric charts now support log-scale Y axis.
+    Toggle in chart settings panel.
+  - CLI (nexus-cli v3.2.0): `nexus runs tail` now supports --since flag
+    (ISO8601 or relative, e.g., --since 30m) to limit log output.
+
+BUG FIXES
+  - Fixed: Deleting a workspace member while they had an active SSO session
+    did not immediately invalidate their session tokens. Session is now
+    revoked synchronously on member removal.
+  - Fixed: NexusData schema registry incorrectly rejected schemas with
+    nested structs deeper than 5 levels. Nesting limit raised to 20 levels.
+  - Fixed: `nexus-cli pipelines export` truncated pipeline YAML specs
+    larger than 64 KB. Now streams correctly up to the 10 MB API limit.
+  - Fixed: Canary weight updates via PATCH /deployments/{id} were delayed
+    up to 2 minutes before taking effect due to a stale Istio config cache.
+    Now propagates within 15 seconds.
+  - Fixed: Monitor reports showed incorrect "0 requests" when the deployment
+    had log_sample_rate < 0.05. Minimum effective sample rate is now 0.01.
+
+=============================================================================
+v3.1.4 — January 28, 2025
+=============================================================================
+
+BUG FIXES
+  - Fixed: S3 pre-signed upload URLs expired after 1 hour, causing step
+    failures for long-running steps. SDK now refreshes URLs proactively
+    10 minutes before expiry. (Requires SDK upgrade to ≥ 3.1.4)
+  - Fixed: Artifact content-addressed deduplication was skipped when the
+    step container had more than 64 environment variables injected (a Nexus
+    Secret Binding limit bug). Deduplication now works regardless of env var
+    count.
+
+IMPROVEMENTS
+  - NexusServe: pod startup health check timeout increased from 5 minutes
+    to 8 minutes to accommodate large model artifact pulls.
+
+=============================================================================
+v3.1.0 — December 10, 2024
+=============================================================================
+
+BREAKING CHANGES
+  - NexusExperiments: metric names are now case-sensitive. Previously
+    "Accuracy" and "accuracy" were treated as the same metric key. Existing
+    metrics logged with uppercase names are migrated automatically, but
+    client code relying on case-insensitive metric names should be updated.
+
+NEW FEATURES
+  - NexusData Lineage Graph: A new visual lineage explorer in the Dashboard
+    shows the DAG connecting datasets → pipeline runs → model versions.
+    Navigable from any dataset, run, or model version detail page.
+
+  - Multi-Cloud Artifact Store: NexusData and NexusPipeline now support
+    cross-cloud artifact references. A pipeline running in AWS can write
+    artifacts to GCS (and vice versa) when cross-cloud credentials are
+    configured in Workspace Settings → Integrations.
+
+  - Evaluator Step Automatic Report: Evaluator-type pipeline steps that log
+    metrics via the NexusExperiments client now auto-generate an Evaluation
+    Report PDF, downloadable from the run detail page.
+
+IMPROVEMENTS
+  - Rate limit headers (X-RateLimit-*) now returned on all endpoints,
+    including 4xx error responses. Previously omitted on error paths.
+  - Enterprise Helm chart: added PodDisruptionBudget for Pipeline Agent
+    and Data Plane Proxy to prevent simultaneous eviction during node
+    maintenance.
+
+=============================================================================
+v3.0.0 — October 1, 2024 (Major Release)
+=============================================================================
+
+BREAKING CHANGES
+  - API version bumped from v2 to v3. v2 API is deprecated and will reach
+    end-of-life on April 1, 2025. Migration guide: docs.nexus.io/migrate-v3
+  - Authentication: API keys no longer accepted in URL query parameters
+    (?api_key=...). Must use Authorization: Bearer header. Query param
+    support removed without deprecation period due to security audit finding.
+  - NexusPipeline: `artifact` references in step specs must now use the
+    full artifact URI format (nexus://workspace-id/pipeline-id/run-id/path).
+    Short-form relative paths no longer resolved.
+
+NEW FEATURES
+  - LangGraph-native pipeline steps: NexusPipeline now has first-class
+    support for LangGraph graphs as pipeline steps. Deploy a LangGraph
+    graph as a containerized step using the `type: LangGraphAgent` step type.
+  - NexusServe gRPC endpoints: all deployed models now expose both REST
+    and gRPC inference endpoints automatically. gRPC follows the KServe
+    Predict v2 protocol.
+  - Workspace Audit Log: all admin actions (user role changes, API key
+    creation, deployment config changes) are now logged to an immutable
+    audit trail. Accessible via GET /workspaces/{id}/audit-log.
+    Audit logs retained for 1 year (Cloud) or configurable (Enterprise).
+  - HIPAA BAA: Nexus Cloud is now HIPAA eligible. BAA available for
+    Growth plan and above. Contact sales for execution.
+
+IMPROVEMENTS
+  - Control plane latency: API p99 latency reduced by 40% following
+    migration of the metadata store from MongoDB to PostgreSQL (Aurora).
+  - NexusServe cold start time: average deployment-to-ready time reduced
+    from ~8 minutes to ~3 minutes via pre-warmed node pools (Cloud).
+
+=============================================================================
+v2.9.2 — August 14, 2024 (Final v2 Patch)
+=============================================================================
+
+SECURITY FIX (Critical)
+  - CVE-2024-4821: Fixed an IDOR vulnerability in the model artifact
+    download endpoint that allowed authenticated users in one workspace to
+    download artifacts from other workspaces if they guessed the artifact
+    UUID. All artifact URLs now include an HMAC-signed workspace scope.
+    All customers should upgrade immediately.
+
+  - Rotated signing keys for all pre-signed artifact URLs. Existing
+    pre-signed URLs older than August 14 are invalidated.

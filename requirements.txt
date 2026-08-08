@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+chromadb
+sentence-transformers
+rank_bm25
+python-frontmatter
+pymupdf
+pydantic
+openai==2.53.0
+python-dotenv
+socksio

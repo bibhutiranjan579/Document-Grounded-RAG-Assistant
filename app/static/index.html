@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nexus RAG Evaluation Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">NEXUS RAG EVALUATION DASHBOARD</p>
+        <h1>Evaluation and Custom Testing</h1>
+        <p class="subtitle">Run benchmark evaluation, inspect retrieval results, and compare retrieval-only vs full RAG generation.</p>
+      </div>
+      <div class="header-actions">
+        <button id="runEvaluationBtn" class="primary-btn">Run Evaluation</button>
+        <span id="evaluationStatus" class="status-label"></span>
+      </div>
+    </header>
+
+    <section class="metrics-grid" aria-label="Evaluation metrics">
+      <div class="metric-card">
+        <p class="metric-title">Retrieval Recall</p>
+        <p class="metric-value" id="metricRecall">--</p>
+      </div>
+      <div class="metric-card">
+        <p class="metric-title">Total Questions</p>
+        <p class="metric-value" id="metricTotal">--</p>
+      </div>
+      <div class="metric-card">
+        <p class="metric-title">Passed Questions</p>
+        <p class="metric-value" id="metricPassed">--</p>
+      </div>
+      <div class="metric-card">
+        <p class="metric-title">Failed Questions</p>
+        <p class="metric-value" id="metricFailed">--</p>
+      </div>
+      <div class="metric-card">
+        <p class="metric-title">Average Latency</p>
+        <p class="metric-value" id="metricLatency">--</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Benchmark Evaluation Results</p>
+          <h2>Evaluation results</h2>
+        </div>
+      </div>
+      <div class="table-wrapper">
+        <div class="table-note">Retrieval PASS means the expected source was found within the retrieved candidate set. Expected Rank shows where it appeared in the ranking.</div>
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th>Question</th>
+              <th>Status</th>
+              <th>Expected Source</th>
+              <th>Expected Retrieved</th>
+              <th>Expected Rank</th>
+              <th>Top Source</th>
+              <th>Top Score</th>
+              <th>Latency</th>
+            </tr>
+          </thead>
+          <tbody id="evaluationTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Test Your Own Question</p>
+          <h2>Custom retrieval + RAG testing</h2>
+        </div>
+      </div>
+      <div class="field-group">
+        <label for="customQuestion">Enter any Nexus documentation question</label>
+        <textarea id="customQuestion" rows="3" placeholder="What authentication methods does Nexus support?"></textarea>
+        <div class="example-list" id="exampleList"></div>
+      </div>
+      <div class="action-row">
+        <button id="runRetrieveBtn" class="secondary-btn">Test Retrieval</button>
+        <button id="runQueryBtn" class="primary-btn">Ask AI</button>
+      </div>
+      <div class="info-note">Retrieval-only test uses <code>POST /retrieve</code>. Full RAG test uses <code>POST /query</code> and calls OpenAI.</div>
+    </section>
+
+    <section class="panel" id="customResultsPanel">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Result</p>
+          <h2>Custom test output</h2>
+        </div>
+      </div>
+      <div id="customResultsContent" class="custom-results"></div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

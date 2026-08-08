@@ -1,0 +1,22 @@
+[
+  {
+    "question": "What authentication methods does Nexus support?",
+    "expected_source": "07_nexus_security_compliance.txt"
+  },
+  {
+    "question": "How does Nexus handle API rate limiting?",
+    "expected_source": "02_nexus_api_reference.txt"
+  },
+  {
+    "question": "What are the main architectural components of Nexus?",
+    "expected_source": "03_nexus_architecture_internals.txt"
+  },
+  {
+    "question": "How should a failed API request be troubleshooted?",
+    "expected_source": "04_nexus_troubleshooting_guide.txt"
+  },
+  {
+    "question": "What are the recommended ML practices for Nexus?",
+    "expected_source": "08_nexus_ml_best_practices.txt"
+  }
+]

@@ -1,0 +1,145 @@
+NEXUS AI PLATFORM — PRODUCT OVERVIEW
+Version 3.2 | Last Updated: March 2025
+Classification: Internal + Public Documentation
+
+=============================================================================
+INTRODUCTION
+=============================================================================
+
+Nexus AI is a cloud-native machine learning platform developed by Meridian Labs,
+designed to accelerate the deployment and management of production ML workloads.
+The platform provides end-to-end tooling for data ingestion, model training,
+experiment tracking, model serving, and observability — all within a unified
+control plane accessible via a web dashboard, CLI, or REST API.
+
+Nexus AI targets teams of 5–200 ML engineers and data scientists who need
+reproducible, scalable infrastructure without managing raw Kubernetes clusters.
+The platform is offered as a fully managed SaaS (Nexus Cloud) or as a
+self-hosted Kubernetes Operator (Nexus Enterprise).
+
+=============================================================================
+CORE MODULES
+=============================================================================
+
+1. NexusPipeline
+   A directed acyclic graph (DAG) execution engine for building multi-step
+   ML workflows. Each node in the pipeline is a containerized step. Steps
+   communicate via typed artifact references stored in the Nexus Artifact Store.
+
+   Supported step types:
+   - DataLoader     : reads from S3, GCS, Azure Blob, or JDBC sources
+   - Preprocessor   : run arbitrary Python transform with versioned outputs
+   - Trainer        : launches distributed training (single-node or multi-node)
+   - Evaluator      : computes metrics and logs to the experiment registry
+   - Deployer       : packages and pushes a model artifact to NexusServe
+
+   Pipelines are defined in YAML or Python SDK (nexus.pipeline.Pipeline class).
+   Runs are triggered manually, via cron schedule, or on artifact change events.
+
+2. NexusServe
+   A model serving layer built on top of KServe and Triton Inference Server.
+   Supports REST and gRPC inference endpoints. Key features:
+   - Canary and blue/green rollout strategies
+   - Automatic horizontal scaling based on request throughput (via KEDA)
+   - Shadow mode traffic: route a % of live traffic to a new model version
+     without affecting the primary response path
+   - Response caching with configurable TTL (backed by Redis)
+   - Hardware-aware scheduling: GPU, CPU, and inferentia instance profiles
+
+3. NexusExperiments
+   An experiment tracking service compatible with the MLflow Tracking API.
+   Teams can log parameters, metrics, and artifacts from any compute environment.
+   Features a visual comparison UI, metric charts, and a model registry.
+
+   The registry supports three model lifecycle stages:
+   - Staging    : model under active evaluation
+   - Production : model serving live traffic
+   - Archived   : model no longer active but retained for audit
+
+4. NexusData
+   A data versioning and lineage service. Provides dataset snapshots (using
+   Delta Lake under the hood), a schema registry, and a lineage graph that
+   connects datasets to the pipeline runs and models that consumed them.
+
+5. NexusMonitor
+   Real-time model monitoring. Tracks data drift (PSI, KL-divergence),
+   prediction distribution shift, feature importance changes, and latency
+   SLOs. Alerts via PagerDuty, Slack, OpsGenie, or webhook.
+
+=============================================================================
+DEPLOYMENT MODELS
+=============================================================================
+
+NEXUS CLOUD (SaaS)
+  - Multi-tenant, hosted on AWS (us-east-1, eu-west-1, ap-southeast-1)
+  - Control plane managed by Meridian Labs; compute runs in the customer's
+    own AWS/GCP/Azure account (BYOC — Bring Your Own Cloud)
+  - Data plane traffic never traverses Meridian Labs infrastructure
+  - SOC 2 Type II certified; GDPR and HIPAA compliant with BAA
+
+NEXUS ENTERPRISE (Self-hosted)
+  - Installed as a Helm chart into any CNCF-conformant Kubernetes cluster
+  - Minimum cluster: 3 nodes, 16 vCPU total, 64 GB RAM
+  - Air-gapped installs supported via private registry mirror
+  - License validated offline via a signed JWT; annual renewal required
+
+=============================================================================
+AUTHENTICATION & ACCESS CONTROL
+=============================================================================
+
+Nexus uses OAuth 2.0 / OIDC for user authentication. SSO integrations are
+available for Okta, Azure AD, Google Workspace, and any SAML 2.0 provider.
+
+Role-Based Access Control (RBAC) is enforced at every API surface:
+
+  Role              Permissions
+  ──────────────────────────────────────────────────────────────────
+  Viewer            Read-only: view pipelines, experiments, models
+  Contributor       Viewer + create/edit pipelines, submit runs
+  Operator          Contributor + deploy models, manage serving configs
+  Admin             Operator + manage users, billing, integrations
+  Platform Admin    Admin + cluster config, license, system settings
+
+Service-to-service auth uses short-lived ECDSA-signed tokens issued by the
+Nexus Identity Service. API keys (for CI/CD integrations) are 256-bit random
+tokens stored as bcrypt hashes; they are scoped to a single workspace.
+
+=============================================================================
+PRICING (NEXUS CLOUD)
+=============================================================================
+
+Billing is metered on three dimensions:
+
+  1. Compute Units (CU): 1 CU = 1 vCPU-hour (GPU instances priced separately)
+  2. Artifact Storage: $0.025 / GB-month
+  3. Serving Requests: $0.0004 per 1,000 inference calls (first 1M/month free)
+
+Plans:
+  Starter   — Up to 500 CU/month, 100 GB storage, 1 workspace   — $149/mo
+  Growth    — Up to 5,000 CU/month, 1 TB storage, 5 workspaces  — $799/mo
+  Scale     — Up to 50,000 CU/month, 10 TB storage, unlimited   — $4,999/mo
+  Enterprise— Custom CU + storage + dedicated BYOC              — Contact sales
+
+Unused CU do not roll over. Storage and request overages billed at list rate.
+Annual contracts receive a 20% discount on the base plan fee.
+
+=============================================================================
+SUPPORT TIERS
+=============================================================================
+
+  Community  : Forum + docs only; no SLA
+  Business   : Email support, 8-hour response SLA (business hours, UTC)
+  Enterprise : Slack Connect channel, 1-hour critical SLA, dedicated CSM
+
+=============================================================================
+KNOWN LIMITATIONS (v3.2)
+=============================================================================
+
+- NexusPipeline step artifacts are limited to 50 GB per step output.
+  Larger intermediate datasets require direct S3/GCS pass-through paths.
+- NexusServe does not yet support streaming (chunked) inference responses.
+  Streaming support is planned for v3.4 (target: Q3 2025).
+- The MLflow-compatible Experiments API implements MLflow REST spec v2.0.
+  MLflow client versions below 2.3.0 may encounter schema mismatches.
+- Multi-region active/active NexusServe deployments are in private beta.
+  Interested Enterprise customers should contact solutions@meridian-labs.io.
