@@ -1,4 +1,4 @@
-# ByteVox RAG Assignment
+# Document-Grounded RAG Assistant
 
 ## Project Overview
 
